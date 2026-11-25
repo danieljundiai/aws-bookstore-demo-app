@@ -7,6 +7,8 @@ import "../../common/hero/hero.css";
 import "../../common/styles/common.css";
 import "./snacks.css";
 
+const newKey = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+
 interface SnackCheckoutProps {}
 
 interface SnackCheckoutState {
@@ -17,6 +19,9 @@ interface SnackCheckoutState {
 }
 
 export default class SnackCheckout extends Component<SnackCheckoutProps, SnackCheckoutState> {
+  // sent with the checkout so a retry of the same checkout never creates a second order
+  private idempotencyKey: string = newKey();
+
   constructor(props: SnackCheckoutProps) {
     super(props);
 
@@ -48,7 +53,7 @@ export default class SnackCheckout extends Component<SnackCheckoutProps, SnackCh
   onCheckout = async () => {
     this.setState({ isPaying: true });
     try {
-      await API.post("snacks", "/snacks/checkout", { body: { snacks: this.state.items } });
+      await API.post("snacks", "/snacks/checkout", { body: { idempotencyKey: this.idempotencyKey } });
       this.setState({ toConfirm: true });
     } catch (e) {
       alert(e);

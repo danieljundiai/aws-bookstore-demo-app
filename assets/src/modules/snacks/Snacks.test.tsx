@@ -5,6 +5,8 @@ import { MemoryRouter } from "react-router-dom";
 import { API } from "aws-amplify";
 import SnacksView from "./SnacksView";
 import SnackCart from "./SnackCart";
+import SnackAddToCart from "./SnackAddToCart";
+import SnackCheckout from "./SnackCheckout";
 
 jest.mock("aws-amplify", () => ({
   API: { get: jest.fn(), post: jest.fn(), put: jest.fn(), del: jest.fn() }
@@ -28,6 +30,7 @@ const render = async (element: React.ReactElement) => {
 };
 
 beforeEach(() => {
+  (API.post as jest.Mock).mockReset().mockResolvedValue({});
   (API.get as jest.Mock).mockImplementation((_api: string, path: string) =>
     Promise.resolve(path === "/snacks/cart" ? cart : snacks));
 });
@@ -45,4 +48,24 @@ it("renders the cart items and the total", async () => {
   expect(container.textContent).toContain("Salted Chips");
   expect(container.textContent).toContain("Dark Chocolate");
   expect(container.querySelector(".snack-total")!.textContent).toBe("Total: $8.00");
+});
+
+it("adds a snack to the cart without sending a price", async () => {
+  const container = await render(<SnackAddToCart snackId="s1" price={2.5} />);
+  await act(async () => {
+    container.querySelector("button")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  expect(API.post).toHaveBeenCalledWith("snacks", "/snacks/cart", { body: { snackId: "s1", quantity: 1 } });
+  expect(API.put).not.toHaveBeenCalled();
+});
+
+it("sends only an idempotency key on checkout", async () => {
+  const container = await render(<SnackCheckout />);
+  await act(async () => {
+    Array.from(container.querySelectorAll("button")).pop()!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  const [, path, options] = (API.post as jest.Mock).mock.calls[0];
+  expect(path).toBe("/snacks/checkout");
+  expect(Object.keys(options.body)).toEqual(["idempotencyKey"]);
+  expect(options.body.idempotencyKey).toMatch(/^[A-Za-z0-9-]{8,64}$/);
 });

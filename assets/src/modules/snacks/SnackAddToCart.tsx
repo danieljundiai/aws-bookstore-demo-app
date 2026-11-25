@@ -2,7 +2,6 @@ import React from "react";
 import { API } from "aws-amplify";
 import { Redirect } from "react-router";
 import { Glyphicon } from "react-bootstrap";
-import { SnackCartItem } from "./types";
 
 interface SnackAddToCartProps {
   snackId: string;
@@ -27,26 +26,10 @@ export class SnackAddToCart extends React.Component<SnackAddToCartProps, SnackAd
   onAddToCart = async () => {
     this.setState({ loading: true });
     try {
-      const cart: SnackCartItem[] = await API.get("snacks", "/snacks/cart", null);
-      const inCart = (cart || []).find(item => item.snackId === this.props.snackId);
-
-      // if the snack already exists in the cart, increase the quantity
-      if (inCart) {
-        await API.put("snacks", "/snacks/cart", {
-          body: {
-            snackId: this.props.snackId,
-            quantity: inCart.quantity + 1
-          }
-        });
-      } else {
-        await API.post("snacks", "/snacks/cart", {
-          body: {
-            snackId: this.props.snackId,
-            price: this.props.price,
-            quantity: 1
-          }
-        });
-      }
+      // the server adds to the existing quantity and prices the snack from the catalog
+      await API.post("snacks", "/snacks/cart", {
+        body: { snackId: this.props.snackId, quantity: 1 }
+      });
       this.setState({ toCart: true });
     } catch (e) {
       alert(e);

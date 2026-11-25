@@ -676,10 +676,10 @@ Data is stored in three DynamoDB tables: `[ProjectName]-Snacks` (catalog, with a
 | GET | `/snacks` | List snacks, optionally filtered by `?category=` |
 | GET | `/snacks/{id}` | Get one snack |
 | GET | `/snacks/cart` | List the snack cart of the user |
-| POST | `/snacks/cart` | Add a snack (`snackId`, `quantity`, `price`) |
-| PUT | `/snacks/cart` | Update the quantity (`snackId`, `quantity`) |
+| POST | `/snacks/cart` | Add `quantity` (1-99) of a snack to the cart (`snackId`, `quantity`). The price comes from the catalog |
+| PUT | `/snacks/cart` | Set the quantity (`snackId`, `quantity`) of a snack already in the cart; 404 otherwise |
 | DELETE | `/snacks/cart` | Remove a snack (`snackId`) |
-| POST | `/snacks/checkout` | Create an order from `snacks` and clear them from the cart |
+| POST | `/snacks/checkout` | Body `{idempotencyKey}`. Prices the stored cart from the catalog, saves the order and clears the cart in one transaction. Repeating a key returns the same order |
 | GET | `/snacks/orders` | List the snack orders of the user |
 
 ## Running your web application locally
