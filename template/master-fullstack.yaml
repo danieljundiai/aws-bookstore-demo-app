@@ -627,6 +627,100 @@ Resources:
     Metadata:
       'AWS::CloudFormation::Designer':
         id: e1a45038-ec76-464d-91b5-6b31bc325fa7
+  SnacksDynamoDbRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Sub '${ProjectName}-SnacksDynamoDbLambda'
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: SnacksDynamoDbPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'dynamodb:PutItem'
+                  - 'dynamodb:Query'
+                  - 'dynamodb:UpdateItem'
+                  - 'dynamodb:BatchWriteItem'
+                  - 'dynamodb:GetItem'
+                  - 'dynamodb:Scan'
+                  - 'dynamodb:DeleteItem'
+                Resource:
+                  - !GetAtt TSnacks.Arn
+                  - !Sub '${TSnacks.Arn}/index/*'
+                  - !GetAtt TSnackCart.Arn
+                  - !GetAtt TSnackOrders.Arn
+# ---------- SNACKS TABLES ---------
+  TSnacks:
+    Type: 'AWS::DynamoDB::Table'
+    Properties:
+      TableName: !Sub '${ProjectName}-Snacks'
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+        - AttributeName: category
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 1
+        WriteCapacityUnits: 1
+      GlobalSecondaryIndexes:
+        - IndexName: category-index
+          KeySchema:
+            - AttributeName: category
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+          ProvisionedThroughput:
+            ReadCapacityUnits: 1
+            WriteCapacityUnits: 1
+  TSnackCart:
+    Type: 'AWS::DynamoDB::Table'
+    Properties:
+      TableName: !Sub '${ProjectName}-SnackCart'
+      AttributeDefinitions:
+        - AttributeName: customerId
+          AttributeType: S
+        - AttributeName: snackId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: customerId
+          KeyType: HASH
+        - AttributeName: snackId
+          KeyType: RANGE
+      ProvisionedThroughput:
+        ReadCapacityUnits: 1
+        WriteCapacityUnits: 1
+  TSnackOrders:
+    Type: 'AWS::DynamoDB::Table'
+    Properties:
+      TableName: !Sub '${ProjectName}-SnackOrders'
+      AttributeDefinitions:
+        - AttributeName: customerId
+          AttributeType: S
+        - AttributeName: orderId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: customerId
+          KeyType: HASH
+        - AttributeName: orderId
+          KeyType: RANGE
+      ProvisionedThroughput:
+        ReadCapacityUnits: 1
+        WriteCapacityUnits: 1
 # ---------- OPENSEARCH ROLES DEFINITIONS ---------        
   OSSearchRole:
     Type: 'AWS::IAM::Role'
@@ -1166,6 +1260,445 @@ Resources:
       'AWS::CloudFormation::Designer':
         id: 9c3f4191-a370-4344-a5b1-626228919c47
 
+  FunctionListSnacks:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      FunctionName: !Sub '${ProjectName}-ListSnacks'
+      Description: Get list of snacks, optionally by category
+      Handler: index.handler
+      MemorySize: 256
+      Runtime: nodejs16.x
+      Role: !GetAtt 
+        - SnacksDynamoDbRole
+        - Arn
+      Timeout: 120
+      Environment:
+        Variables:
+          SNACKS_TABLE: !Sub '${ProjectName}-Snacks'
+      Code:
+        ZipFile: |
+          "use strict";
+
+          const AWS = require("aws-sdk");
+          const dynamoDb = new AWS.DynamoDB.DocumentClient();
+          const headers = {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Credentials": true
+          };
+          const respond = (callback, error, data) => callback(null, error
+            ? { statusCode: 500, headers: headers, body: JSON.stringify({ message: error.message }) }
+            : { statusCode: 200, headers: headers, body: data === undefined ? undefined : JSON.stringify(data) });
+
+          // ListSnacks - List all snacks, or only the snacks of a category
+          exports.handler = (event, context, callback) => {
+            // Return immediately if being called by warmer
+            if (event.source === "warmer") {
+              return callback(null, "Lambda is warm");
+            }
+            const category = event.queryStringParameters && event.queryStringParameters.category;
+            const params = category
+              ? {
+                  TableName: process.env.SNACKS_TABLE, // [ProjectName]-Snacks
+                  IndexName: "category-index",
+                  KeyConditionExpression: "category = :category",
+                  ExpressionAttributeValues: { ":category": category }
+                }
+              : { TableName: process.env.SNACKS_TABLE };
+            dynamoDb[category ? "query" : "scan"](params).promise()
+              .then((data) => respond(callback, null, data.Items))
+              .catch((error) => respond(callback, error));
+          };
+  FunctionGetSnack:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      FunctionName: !Sub '${ProjectName}-GetSnack'
+      Description: Get snack by id
+      Handler: index.handler
+      MemorySize: 256
+      Runtime: nodejs16.x
+      Role: !GetAtt 
+        - SnacksDynamoDbRole
+        - Arn
+      Timeout: 120
+      Environment:
+        Variables:
+          SNACKS_TABLE: !Sub '${ProjectName}-Snacks'
+      Code:
+        ZipFile: |
+          "use strict";
+
+          const AWS = require("aws-sdk");
+          const dynamoDb = new AWS.DynamoDB.DocumentClient();
+          const headers = {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Credentials": true
+          };
+          const respond = (callback, error, data) => callback(null, error
+            ? { statusCode: 500, headers: headers, body: JSON.stringify({ message: error.message }) }
+            : { statusCode: 200, headers: headers, body: data === undefined ? undefined : JSON.stringify(data) });
+
+          // GetSnack - Get a snack by id
+          exports.handler = (event, context, callback) => {
+            // Return immediately if being called by warmer
+            if (event.source === "warmer") {
+              return callback(null, "Lambda is warm");
+            }
+            const params = {
+              TableName: process.env.SNACKS_TABLE, // [ProjectName]-Snacks
+              Key: { id: event.pathParameters.id }
+            };
+            dynamoDb.get(params).promise()
+              .then((data) => data.Item
+                ? respond(callback, null, data.Item)
+                : callback(null, { statusCode: 404, headers: headers, body: JSON.stringify({ message: "Snack not found" }) }))
+              .catch((error) => respond(callback, error));
+          };
+  FunctionAddSnackToCart:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      FunctionName: !Sub '${ProjectName}-AddSnackToCart'
+      Description: Add a snack to the snack cart
+      Handler: index.handler
+      MemorySize: 256
+      Runtime: nodejs16.x
+      Role: !GetAtt 
+        - SnacksDynamoDbRole
+        - Arn
+      Timeout: 120
+      Environment:
+        Variables:
+          SNACKS_CART_TABLE: !Sub '${ProjectName}-SnackCart'
+      Code:
+        ZipFile: |
+          "use strict";
+
+          const AWS = require("aws-sdk");
+          const dynamoDb = new AWS.DynamoDB.DocumentClient();
+          const headers = {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Credentials": true
+          };
+          const respond = (callback, error, data) => callback(null, error
+            ? { statusCode: 500, headers: headers, body: JSON.stringify({ message: error.message }) }
+            : { statusCode: 200, headers: headers, body: data === undefined ? undefined : JSON.stringify(data) });
+
+          // AddSnackToCart - Add a snack to the snack cart of a customer
+          exports.handler = (event, context, callback) => {
+            // Return immediately if being called by warmer
+            if (event.source === "warmer") {
+              return callback(null, "Lambda is warm");
+            }
+            const data = JSON.parse(event.body);
+            const params = {
+              TableName: process.env.SNACKS_CART_TABLE, // [ProjectName]-SnackCart
+              Item: {
+                customerId: event.requestContext.identity.cognitoIdentityId,
+                snackId: data.snackId,
+                quantity: data.quantity,
+                price: data.price
+              }
+            };
+            dynamoDb.put(params).promise()
+              .then(() => respond(callback, null))
+              .catch((error) => respond(callback, error));
+          };
+  FunctionListSnackCartItems:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      FunctionName: !Sub '${ProjectName}-ListSnackCartItems'
+      Description: List items in the snack cart
+      Handler: index.handler
+      MemorySize: 256
+      Runtime: nodejs16.x
+      Role: !GetAtt 
+        - SnacksDynamoDbRole
+        - Arn
+      Timeout: 120
+      Environment:
+        Variables:
+          SNACKS_CART_TABLE: !Sub '${ProjectName}-SnackCart'
+      Code:
+        ZipFile: |
+          "use strict";
+
+          const AWS = require("aws-sdk");
+          const dynamoDb = new AWS.DynamoDB.DocumentClient();
+          const headers = {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Credentials": true
+          };
+          const respond = (callback, error, data) => callback(null, error
+            ? { statusCode: 500, headers: headers, body: JSON.stringify({ message: error.message }) }
+            : { statusCode: 200, headers: headers, body: data === undefined ? undefined : JSON.stringify(data) });
+
+          // ListSnackCartItems - List all items in the snack cart of a customer
+          exports.handler = (event, context, callback) => {
+            // Return immediately if being called by warmer
+            if (event.source === "warmer") {
+              return callback(null, "Lambda is warm");
+            }
+            const params = {
+              TableName: process.env.SNACKS_CART_TABLE, // [ProjectName]-SnackCart
+              KeyConditionExpression: "customerId = :customerId",
+              ExpressionAttributeValues: {
+                ":customerId": event.requestContext.identity.cognitoIdentityId
+              }
+            };
+            dynamoDb.query(params).promise()
+              .then((data) => respond(callback, null, data.Items))
+              .catch((error) => respond(callback, error));
+          };
+  FunctionUpdateSnackCart:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      FunctionName: !Sub '${ProjectName}-UpdateSnackCart'
+      Description: Update snack quantity in the snack cart
+      Handler: index.handler
+      MemorySize: 256
+      Runtime: nodejs16.x
+      Role: !GetAtt 
+        - SnacksDynamoDbRole
+        - Arn
+      Timeout: 120
+      Environment:
+        Variables:
+          SNACKS_CART_TABLE: !Sub '${ProjectName}-SnackCart'
+      Code:
+        ZipFile: |
+          "use strict";
+
+          const AWS = require("aws-sdk");
+          const dynamoDb = new AWS.DynamoDB.DocumentClient();
+          const headers = {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Credentials": true
+          };
+          const respond = (callback, error, data) => callback(null, error
+            ? { statusCode: 500, headers: headers, body: JSON.stringify({ message: error.message }) }
+            : { statusCode: 200, headers: headers, body: data === undefined ? undefined : JSON.stringify(data) });
+
+          // UpdateSnackCart - Update the quantity of a snack in the snack cart of a customer
+          exports.handler = (event, context, callback) => {
+            // Return immediately if being called by warmer
+            if (event.source === "warmer") {
+              return callback(null, "Lambda is warm");
+            }
+            const data = JSON.parse(event.body);
+            const params = {
+              TableName: process.env.SNACKS_CART_TABLE, // [ProjectName]-SnackCart
+              Key: {
+                customerId: event.requestContext.identity.cognitoIdentityId,
+                snackId: data.snackId
+              },
+              UpdateExpression: "SET quantity = :quantity",
+              ExpressionAttributeValues: { ":quantity": data.quantity }
+            };
+            dynamoDb.update(params).promise()
+              .then(() => respond(callback, null))
+              .catch((error) => respond(callback, error));
+          };
+  FunctionRemoveSnackFromCart:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      FunctionName: !Sub '${ProjectName}-RemoveSnackFromCart'
+      Description: Remove a snack from the snack cart
+      Handler: index.handler
+      MemorySize: 256
+      Runtime: nodejs16.x
+      Role: !GetAtt 
+        - SnacksDynamoDbRole
+        - Arn
+      Timeout: 120
+      Environment:
+        Variables:
+          SNACKS_CART_TABLE: !Sub '${ProjectName}-SnackCart'
+      Code:
+        ZipFile: |
+          "use strict";
+
+          const AWS = require("aws-sdk");
+          const dynamoDb = new AWS.DynamoDB.DocumentClient();
+          const headers = {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Credentials": true
+          };
+          const respond = (callback, error, data) => callback(null, error
+            ? { statusCode: 500, headers: headers, body: JSON.stringify({ message: error.message }) }
+            : { statusCode: 200, headers: headers, body: data === undefined ? undefined : JSON.stringify(data) });
+
+          // RemoveSnackFromCart - Remove a snack from the snack cart of a customer
+          exports.handler = (event, context, callback) => {
+            // Return immediately if being called by warmer
+            if (event.source === "warmer") {
+              return callback(null, "Lambda is warm");
+            }
+            const data = JSON.parse(event.body);
+            const params = {
+              TableName: process.env.SNACKS_CART_TABLE, // [ProjectName]-SnackCart
+              Key: {
+                customerId: event.requestContext.identity.cognitoIdentityId,
+                snackId: data.snackId
+              }
+            };
+            dynamoDb.delete(params).promise()
+              .then(() => respond(callback, null))
+              .catch((error) => respond(callback, error));
+          };
+  FunctionCheckoutSnacks:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      FunctionName: !Sub '${ProjectName}-CheckoutSnacks'
+      Description: Create a snack order from the snack cart
+      Handler: index.handler
+      MemorySize: 256
+      Runtime: nodejs16.x
+      Role: !GetAtt 
+        - SnacksDynamoDbRole
+        - Arn
+      Timeout: 120
+      Environment:
+        Variables:
+          SNACKS_ORDERS_TABLE: !Sub '${ProjectName}-SnackOrders'
+          SNACKS_CART_TABLE: !Sub '${ProjectName}-SnackCart'
+      Code:
+        ZipFile: |
+          "use strict";
+
+          const AWS = require("aws-sdk");
+          const dynamoDb = new AWS.DynamoDB.DocumentClient();
+          const headers = {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Credentials": true
+          };
+          const respond = (callback, error, data) => callback(null, error
+            ? { statusCode: 500, headers: headers, body: JSON.stringify({ message: error.message }) }
+            : { statusCode: 200, headers: headers, body: data === undefined ? undefined : JSON.stringify(data) });
+
+          // CheckoutSnacks - Turn the snack cart of a customer into a snack order
+          exports.handler = (event, context, callback) => {
+            // Return immediately if being called by warmer
+            if (event.source === "warmer") {
+              return callback(null, "Lambda is warm");
+            }
+            const data = JSON.parse(event.body);
+            const customerId = event.requestContext.identity.cognitoIdentityId;
+            const order = {
+              TableName: process.env.SNACKS_ORDERS_TABLE, // [ProjectName]-SnackOrders
+              Item: {
+                customerId: customerId,
+                orderId: context.awsRequestId,
+                orderDate: Date.now(),
+                snacks: data.snacks
+              }
+            };
+            // Save the order first, then remove the processed snacks from the cart
+            dynamoDb.put(order).promise()
+              .then(() => Promise.all(data.snacks.map((item) => dynamoDb.delete({
+                TableName: process.env.SNACKS_CART_TABLE, // [ProjectName]-SnackCart
+                Key: { customerId: customerId, snackId: item.snackId }
+              }).promise())))
+              .then(() => respond(callback, null))
+              .catch((error) => respond(callback, error));
+          };
+  FunctionListSnackOrders:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      FunctionName: !Sub '${ProjectName}-ListSnackOrders'
+      Description: Get list of snack orders by customerId
+      Handler: index.handler
+      MemorySize: 256
+      Runtime: nodejs16.x
+      Role: !GetAtt 
+        - SnacksDynamoDbRole
+        - Arn
+      Timeout: 120
+      Environment:
+        Variables:
+          SNACKS_ORDERS_TABLE: !Sub '${ProjectName}-SnackOrders'
+      Code:
+        ZipFile: |
+          "use strict";
+
+          const AWS = require("aws-sdk");
+          const dynamoDb = new AWS.DynamoDB.DocumentClient();
+          const headers = {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Credentials": true
+          };
+          const respond = (callback, error, data) => callback(null, error
+            ? { statusCode: 500, headers: headers, body: JSON.stringify({ message: error.message }) }
+            : { statusCode: 200, headers: headers, body: data === undefined ? undefined : JSON.stringify(data) });
+
+          // ListSnackOrders - List snack orders of a given customer
+          exports.handler = (event, context, callback) => {
+            // Return immediately if being called by warmer
+            if (event.source === "warmer") {
+              return callback(null, "Lambda is warm");
+            }
+            const params = {
+              TableName: process.env.SNACKS_ORDERS_TABLE, // [ProjectName]-SnackOrders
+              KeyConditionExpression: "customerId = :customerId",
+              ExpressionAttributeValues: {
+                ":customerId": event.requestContext.identity.cognitoIdentityId
+              }
+            };
+            dynamoDb.query(params).promise()
+              .then((data) => respond(callback, null, data.Items))
+              .catch((error) => respond(callback, error));
+          };
+  FunctionUploadSnacks:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      FunctionName: !Sub '${ProjectName}-UploadSnacks'
+      Description: Upload sample data for snacks
+      Handler: index.handler
+      Runtime: nodejs16.x
+      Role: !GetAtt 
+        - SnacksDynamoDbRole
+        - Arn
+      Timeout: 120
+      Environment:
+        Variables:
+          TABLE_NAME: !Sub '${ProjectName}-Snacks'
+      Code:
+        ZipFile: |
+          "use strict";
+
+          const AWS = require("aws-sdk");
+          const response = require("cfn-response"); // available to inline (ZipFile) Lambda code
+          const dynamoDb = new AWS.DynamoDB.DocumentClient();
+
+          // UploadSnacks - Seed the snacks table with a sample set of snacks
+          const snacks = [
+            ["Potato Chips", "Salty", "Classic salted potato chips", 3.5],
+            ["Popcorn", "Salty", "Buttered popcorn", 3],
+            ["Pretzels", "Salty", "Crunchy baked pretzels", 2.75],
+            ["Mixed Nuts", "Salty", "Roasted almonds, cashews and peanuts", 5],
+            ["Chocolate Bar", "Sweet", "Milk chocolate bar", 2.5],
+            ["Gummy Bears", "Sweet", "Fruit flavored gummy bears", 2],
+            ["Chocolate Cookies", "Sweet", "Cookies with chocolate chips", 3.25],
+            ["Granola Bar", "Healthy", "Oats, honey and almonds", 2.25],
+            ["Dried Mango", "Healthy", "Unsweetened dried mango slices", 4.5],
+            ["Sparkling Water", "Drinks", "Lemon flavored sparkling water", 1.75],
+            ["Iced Tea", "Drinks", "Peach iced tea", 2.5],
+            ["Orange Juice", "Drinks", "Fresh squeezed orange juice", 3.75]
+          ];
+
+          exports.handler = (event, context, callback) => {
+            if (event.RequestType !== "Create") {
+              return response.send(event, context, response.SUCCESS);
+            }
+            const items = snacks.map((s, i) => ({
+              PutRequest: { Item: { id: "snack-" + (i + 1), name: s[0], category: s[1], description: s[2], price: s[3] } }
+            }));
+            dynamoDb.batchWrite({ RequestItems: { [process.env.TABLE_NAME]: items } }).promise() // [ProjectName]-Snacks
+              .then(() => response.send(event, context, response.SUCCESS))
+              .catch((error) => {
+                console.log(error);
+                response.send(event, context, response.FAILED, { Error: "Upload snacks failed" });
+              });
+          };
+
 # ---------- LAMBDA FUNCTIONS for NEPTUNE ---------  
 
   FunctionGetRecommendations:
@@ -1501,6 +2034,126 @@ Resources:
     Metadata:
       'AWS::CloudFormation::Designer':
         id: 06a821b7-638e-471c-ab50-51710b73767c
+  FunctionListSnacksPermissions:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref FunctionListSnacks
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Join 
+        - ''
+        - - 'arn:aws:execute-api:'
+          - !Ref 'AWS::Region'
+          - ':'
+          - !Ref 'AWS::AccountId'
+          - ':'
+          - !Ref AppApi
+          - /*
+  FunctionGetSnackPermissions:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref FunctionGetSnack
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Join 
+        - ''
+        - - 'arn:aws:execute-api:'
+          - !Ref 'AWS::Region'
+          - ':'
+          - !Ref 'AWS::AccountId'
+          - ':'
+          - !Ref AppApi
+          - /*
+  FunctionAddSnackToCartPermissions:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref FunctionAddSnackToCart
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Join 
+        - ''
+        - - 'arn:aws:execute-api:'
+          - !Ref 'AWS::Region'
+          - ':'
+          - !Ref 'AWS::AccountId'
+          - ':'
+          - !Ref AppApi
+          - /*
+  FunctionListSnackCartItemsPermissions:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref FunctionListSnackCartItems
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Join 
+        - ''
+        - - 'arn:aws:execute-api:'
+          - !Ref 'AWS::Region'
+          - ':'
+          - !Ref 'AWS::AccountId'
+          - ':'
+          - !Ref AppApi
+          - /*
+  FunctionUpdateSnackCartPermissions:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref FunctionUpdateSnackCart
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Join 
+        - ''
+        - - 'arn:aws:execute-api:'
+          - !Ref 'AWS::Region'
+          - ':'
+          - !Ref 'AWS::AccountId'
+          - ':'
+          - !Ref AppApi
+          - /*
+  FunctionRemoveSnackFromCartPermissions:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref FunctionRemoveSnackFromCart
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Join 
+        - ''
+        - - 'arn:aws:execute-api:'
+          - !Ref 'AWS::Region'
+          - ':'
+          - !Ref 'AWS::AccountId'
+          - ':'
+          - !Ref AppApi
+          - /*
+  FunctionCheckoutSnacksPermissions:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref FunctionCheckoutSnacks
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Join 
+        - ''
+        - - 'arn:aws:execute-api:'
+          - !Ref 'AWS::Region'
+          - ':'
+          - !Ref 'AWS::AccountId'
+          - ':'
+          - !Ref AppApi
+          - /*
+  FunctionListSnackOrdersPermissions:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref FunctionListSnackOrders
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Join 
+        - ''
+        - - 'arn:aws:execute-api:'
+          - !Ref 'AWS::Region'
+          - ':'
+          - !Ref 'AWS::AccountId'
+          - ':'
+          - !Ref AppApi
+          - /*
   FunctionSearchPermissions:
     Type: 'AWS::Lambda::Permission'
     Properties:
@@ -2207,6 +2860,38 @@ Resources:
             method.response.header.Access-Control-Allow-Origin: true
           StatusCode: '200'
           
+  SnacksApiResource:
+    Type: 'AWS::ApiGateway::Resource'
+    Properties:
+      RestApiId: !Ref AppApi
+      ParentId: !GetAtt 
+        - AppApi
+        - RootResourceId
+      PathPart: snacks
+  SnackItemApiResource:
+    Type: 'AWS::ApiGateway::Resource'
+    Properties:
+      RestApiId: !Ref AppApi
+      ParentId: !Ref SnacksApiResource
+      PathPart: '{id}'
+  SnackCartApiResource:
+    Type: 'AWS::ApiGateway::Resource'
+    Properties:
+      RestApiId: !Ref AppApi
+      ParentId: !Ref SnacksApiResource
+      PathPart: cart
+  SnackCheckoutApiResource:
+    Type: 'AWS::ApiGateway::Resource'
+    Properties:
+      RestApiId: !Ref AppApi
+      ParentId: !Ref SnacksApiResource
+      PathPart: checkout
+  SnackOrdersApiResource:
+    Type: 'AWS::ApiGateway::Resource'
+    Properties:
+      RestApiId: !Ref AppApi
+      ParentId: !Ref SnacksApiResource
+      PathPart: orders
   RecommendationsApiResource:
     Type: 'AWS::ApiGateway::Resource'
     Properties:
@@ -2289,6 +2974,360 @@ Resources:
         - RootResourceId
       PathPart: bestsellers 
 
+  SnacksApiRequestGET:
+    DependsOn: FunctionListSnacksPermissions
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      AuthorizationType: AWS_IAM
+      HttpMethod: GET
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Join 
+          - ''
+          - - 'arn:aws:apigateway:'
+            - !Ref 'AWS::Region'
+            - ':lambda:path/2015-03-31/functions/'
+            - !GetAtt 
+              - FunctionListSnacks
+              - Arn
+            - /invocations
+        IntegrationResponses:
+          - StatusCode: 200
+      ResourceId: !Ref SnacksApiResource
+      RestApiId: !Ref AppApi
+      MethodResponses:
+        - StatusCode: 200
+          ResponseModels:
+            application/json: Empty
+  SnacksApiRequestOPTIONS:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      ResourceId: !Ref SnacksApiResource
+      RestApiId: !Ref AppApi
+      AuthorizationType: NONE
+      HttpMethod: OPTIONS
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+          - ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: >-
+                'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'
+              method.response.header.Access-Control-Allow-Methods: '''GET,POST,PUT,DELETE,OPTIONS,HEAD,PATCH'''
+              method.response.header.Access-Control-Allow-Origin: '''*'''
+            ResponseTemplates:
+              application/json: ''
+            StatusCode: '200'
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+      MethodResponses:
+        - ResponseModels:
+            application/json: Empty
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+          StatusCode: '200'
+  SnackItemApiRequestGET:
+    DependsOn: FunctionGetSnackPermissions
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      AuthorizationType: AWS_IAM
+      HttpMethod: GET
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Join 
+          - ''
+          - - 'arn:aws:apigateway:'
+            - !Ref 'AWS::Region'
+            - ':lambda:path/2015-03-31/functions/'
+            - !GetAtt 
+              - FunctionGetSnack
+              - Arn
+            - /invocations
+        IntegrationResponses:
+          - StatusCode: 200
+      ResourceId: !Ref SnackItemApiResource
+      RestApiId: !Ref AppApi
+      MethodResponses:
+        - StatusCode: 200
+          ResponseModels:
+            application/json: Empty
+  SnackItemApiRequestOPTIONS:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      ResourceId: !Ref SnackItemApiResource
+      RestApiId: !Ref AppApi
+      AuthorizationType: NONE
+      HttpMethod: OPTIONS
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+          - ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: >-
+                'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'
+              method.response.header.Access-Control-Allow-Methods: '''GET,POST,PUT,DELETE,OPTIONS,HEAD,PATCH'''
+              method.response.header.Access-Control-Allow-Origin: '''*'''
+            ResponseTemplates:
+              application/json: ''
+            StatusCode: '200'
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+      MethodResponses:
+        - ResponseModels:
+            application/json: Empty
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+          StatusCode: '200'
+  SnackCartApiRequestGET:
+    DependsOn: FunctionListSnackCartItemsPermissions
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      AuthorizationType: AWS_IAM
+      HttpMethod: GET
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Join 
+          - ''
+          - - 'arn:aws:apigateway:'
+            - !Ref 'AWS::Region'
+            - ':lambda:path/2015-03-31/functions/'
+            - !GetAtt 
+              - FunctionListSnackCartItems
+              - Arn
+            - /invocations
+        IntegrationResponses:
+          - StatusCode: 200
+      ResourceId: !Ref SnackCartApiResource
+      RestApiId: !Ref AppApi
+      MethodResponses:
+        - StatusCode: 200
+          ResponseModels:
+            application/json: Empty
+  SnackCartApiRequestPOST:
+    DependsOn: FunctionAddSnackToCartPermissions
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      AuthorizationType: AWS_IAM
+      HttpMethod: POST
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Join 
+          - ''
+          - - 'arn:aws:apigateway:'
+            - !Ref 'AWS::Region'
+            - ':lambda:path/2015-03-31/functions/'
+            - !GetAtt 
+              - FunctionAddSnackToCart
+              - Arn
+            - /invocations
+        IntegrationResponses:
+          - StatusCode: 200
+      ResourceId: !Ref SnackCartApiResource
+      RestApiId: !Ref AppApi
+      MethodResponses:
+        - StatusCode: 200
+          ResponseModels:
+            application/json: Empty
+  SnackCartApiRequestPUT:
+    DependsOn: FunctionUpdateSnackCartPermissions
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      AuthorizationType: AWS_IAM
+      HttpMethod: PUT
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Join 
+          - ''
+          - - 'arn:aws:apigateway:'
+            - !Ref 'AWS::Region'
+            - ':lambda:path/2015-03-31/functions/'
+            - !GetAtt 
+              - FunctionUpdateSnackCart
+              - Arn
+            - /invocations
+        IntegrationResponses:
+          - StatusCode: 200
+      ResourceId: !Ref SnackCartApiResource
+      RestApiId: !Ref AppApi
+      MethodResponses:
+        - StatusCode: 200
+          ResponseModels:
+            application/json: Empty
+  SnackCartApiRequestDELETE:
+    DependsOn: FunctionRemoveSnackFromCartPermissions
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      AuthorizationType: AWS_IAM
+      HttpMethod: DELETE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Join 
+          - ''
+          - - 'arn:aws:apigateway:'
+            - !Ref 'AWS::Region'
+            - ':lambda:path/2015-03-31/functions/'
+            - !GetAtt 
+              - FunctionRemoveSnackFromCart
+              - Arn
+            - /invocations
+        IntegrationResponses:
+          - StatusCode: 200
+      ResourceId: !Ref SnackCartApiResource
+      RestApiId: !Ref AppApi
+      MethodResponses:
+        - StatusCode: 200
+          ResponseModels:
+            application/json: Empty
+  SnackCartApiRequestOPTIONS:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      ResourceId: !Ref SnackCartApiResource
+      RestApiId: !Ref AppApi
+      AuthorizationType: NONE
+      HttpMethod: OPTIONS
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+          - ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: >-
+                'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'
+              method.response.header.Access-Control-Allow-Methods: '''GET,POST,PUT,DELETE,OPTIONS,HEAD,PATCH'''
+              method.response.header.Access-Control-Allow-Origin: '''*'''
+            ResponseTemplates:
+              application/json: ''
+            StatusCode: '200'
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+      MethodResponses:
+        - ResponseModels:
+            application/json: Empty
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+          StatusCode: '200'
+  SnackCheckoutApiRequestPOST:
+    DependsOn: FunctionCheckoutSnacksPermissions
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      AuthorizationType: AWS_IAM
+      HttpMethod: POST
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Join 
+          - ''
+          - - 'arn:aws:apigateway:'
+            - !Ref 'AWS::Region'
+            - ':lambda:path/2015-03-31/functions/'
+            - !GetAtt 
+              - FunctionCheckoutSnacks
+              - Arn
+            - /invocations
+        IntegrationResponses:
+          - StatusCode: 200
+      ResourceId: !Ref SnackCheckoutApiResource
+      RestApiId: !Ref AppApi
+      MethodResponses:
+        - StatusCode: 200
+          ResponseModels:
+            application/json: Empty
+  SnackCheckoutApiRequestOPTIONS:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      ResourceId: !Ref SnackCheckoutApiResource
+      RestApiId: !Ref AppApi
+      AuthorizationType: NONE
+      HttpMethod: OPTIONS
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+          - ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: >-
+                'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'
+              method.response.header.Access-Control-Allow-Methods: '''GET,POST,PUT,DELETE,OPTIONS,HEAD,PATCH'''
+              method.response.header.Access-Control-Allow-Origin: '''*'''
+            ResponseTemplates:
+              application/json: ''
+            StatusCode: '200'
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+      MethodResponses:
+        - ResponseModels:
+            application/json: Empty
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+          StatusCode: '200'
+  SnackOrdersApiRequestGET:
+    DependsOn: FunctionListSnackOrdersPermissions
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      AuthorizationType: AWS_IAM
+      HttpMethod: GET
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Join 
+          - ''
+          - - 'arn:aws:apigateway:'
+            - !Ref 'AWS::Region'
+            - ':lambda:path/2015-03-31/functions/'
+            - !GetAtt 
+              - FunctionListSnackOrders
+              - Arn
+            - /invocations
+        IntegrationResponses:
+          - StatusCode: 200
+      ResourceId: !Ref SnackOrdersApiResource
+      RestApiId: !Ref AppApi
+      MethodResponses:
+        - StatusCode: 200
+          ResponseModels:
+            application/json: Empty
+  SnackOrdersApiRequestOPTIONS:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      ResourceId: !Ref SnackOrdersApiResource
+      RestApiId: !Ref AppApi
+      AuthorizationType: NONE
+      HttpMethod: OPTIONS
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+          - ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: >-
+                'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'
+              method.response.header.Access-Control-Allow-Methods: '''GET,POST,PUT,DELETE,OPTIONS,HEAD,PATCH'''
+              method.response.header.Access-Control-Allow-Origin: '''*'''
+            ResponseTemplates:
+              application/json: ''
+            StatusCode: '200'
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+      MethodResponses:
+        - ResponseModels:
+            application/json: Empty
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+          StatusCode: '200'
+
   ApiAuthorizer:
     Type: 'AWS::ApiGateway::Authorizer'
     Properties:
@@ -2328,6 +3367,19 @@ Resources:
       - SearchApiRequestOPTIONS
       - BestsellersApiRequestGET
       - BestsellersApiRequestOPTIONS
+      - SnacksApiRequestGET
+      - SnacksApiRequestOPTIONS
+      - SnackItemApiRequestGET
+      - SnackItemApiRequestOPTIONS
+      - SnackCartApiRequestGET
+      - SnackCartApiRequestPOST
+      - SnackCartApiRequestPUT
+      - SnackCartApiRequestDELETE
+      - SnackCartApiRequestOPTIONS
+      - SnackCheckoutApiRequestPOST
+      - SnackCheckoutApiRequestOPTIONS
+      - SnackOrdersApiRequestGET
+      - SnackOrdersApiRequestOPTIONS
     Type: 'AWS::ApiGateway::Deployment'
     Properties:
       Description: Prod deployment for API
@@ -2488,6 +3540,13 @@ Resources:
        - FunctionUploadBooks
        - UpdateSearchCluster
        - OpenSearchDomain
+
+  SnacksUploader:
+    Type: 'Custom::CustomResource'
+    DependsOn:
+      - TSnacks
+    Properties:
+      ServiceToken: !GetAtt FunctionUploadSnacks.Arn
 
 # ------------------------ FRONTEND ------------------------
   AssetsCodeRepository:
