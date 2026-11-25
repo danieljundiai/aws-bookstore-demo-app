@@ -49,6 +49,11 @@ Amplify.configure({
         name: "bestsellers",
         endpoint: config.apiGateway.API_URL,
         region: config.apiGateway.REGION
+      },
+      {
+        name: "snacks",
+        endpoint: config.apiGateway.API_URL,
+        region: config.apiGateway.REGION
       }
     ]
   }

@@ -60,6 +60,15 @@ class App extends Component<AppProps, AppState> {
       <LinkContainer to="/past">
         <NavItem><span className="orange line-height-24">Past orders</span></NavItem>
       </LinkContainer>
+      <LinkContainer to="/snacks">
+        <NavItem><span className="orange line-height-24">Snacks</span></NavItem>
+      </LinkContainer>
+      <LinkContainer to="/snacks/orders">
+        <NavItem><span className="orange line-height-24">Snack orders</span></NavItem>
+      </LinkContainer>
+      <LinkContainer to="/snacks/cart">
+        <NavItem><span className="orange line-height-24">Snack cart</span></NavItem>
+      </LinkContainer>
       <LinkContainer to="/best">
         <NavItem><span className="orange line-height-24">Best sellers</span></NavItem>
       </LinkContainer>

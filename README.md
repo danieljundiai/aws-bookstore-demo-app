@@ -665,6 +665,23 @@ Similar to CloudWatch, the capabilities provided by CodeCommit, CodePipeline, an
 
 &nbsp;
 
+## Snacks
+
+The app includes a separate snack-selling flow, independent from the books flow. Logged-in users can browse snacks (`/snacks`), open a snack (`/snacks/:id`), manage the snack cart (`/snacks/cart`), pay (`/snacks/checkout`, `/snacks/checkout-confirm`) and list past snack orders (`/snacks/orders`). The frontend code is in `assets/src/modules/snacks/`.
+
+Data is stored in three DynamoDB tables: `[ProjectName]-Snacks` (catalog, with a `category-index`), `[ProjectName]-SnackCart` and `[ProjectName]-SnackOrders`. All endpoints use IAM authorization:
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/snacks` | List snacks, optionally filtered by `?category=` |
+| GET | `/snacks/{id}` | Get one snack |
+| GET | `/snacks/cart` | List the snack cart of the user |
+| POST | `/snacks/cart` | Add a snack (`snackId`, `quantity`, `price`) |
+| PUT | `/snacks/cart` | Update the quantity (`snackId`, `quantity`) |
+| DELETE | `/snacks/cart` | Remove a snack (`snackId`) |
+| POST | `/snacks/checkout` | Create an order from `snacks` and clear them from the cart |
+| GET | `/snacks/orders` | List the snack orders of the user |
+
 ## Running your web application locally
 
 1. If you haven't setup Git credentials for AWS CodeCommit before, head to the IAM Console. If you have already you can skip to step 5. 

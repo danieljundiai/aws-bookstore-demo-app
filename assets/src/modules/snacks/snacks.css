@@ -1,0 +1,20 @@
+.snack-card {
+  min-height: 200px;
+}
+
+.snack-card .snack-category {
+  text-transform: capitalize;
+}
+
+.snacks-filter {
+  margin-bottom: 15px;
+}
+
+.snacks-filter .btn {
+  margin-right: 5px;
+  margin-bottom: 5px;
+}
+
+.snack-quantity {
+  width: 90px;
+}
